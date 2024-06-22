@@ -1,9 +1,12 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Security, status
 from sqlalchemy import Column, Integer, ForeignKey, String, Float, create_engine
-from sqlalchemy.orm import sessionmaker, relationship, Session
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session, declarative_base, relationship
 from pydantic import BaseModel
 from typing import List
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from datetime import datetime, timedelta
+from fastapi.security import OAuth2PasswordBearer
 
 # Initialize FastAPI
 app = FastAPI()
@@ -101,9 +104,42 @@ def get_db():
     finally:
         db.close()
 
+# Token Settings
+SECRET_KEY = "your-secret-key"  # Replace with a secure random key in production
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Token functions
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def verify_token(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
 # CRUD operations for orders
-@app.post("/orders/", response_model=OrderResponse, status_code=201)
-def create_order(order: OrderCreate, db: Session = Depends(get_db)):
+@app.post("/token")
+def login_for_access_token(username: str, password: str):
+    # Replace with actual authentication logic, verify username/password
+    # For simplicity, let's assume a hardcoded user for demonstration
+    if username == "user" and password == "password":
+        access_token = create_access_token(data={"sub": username})
+        return {"access_token": access_token, "token_type": "bearer"}
+    else:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+@app.post("/orders/", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
+def create_order(order: OrderCreate, db: Session = Depends(get_db), token_data: dict = Depends(verify_token)):
     db_order = Order(**order.dict())
     db.add(db_order)
     db.commit()
@@ -111,22 +147,22 @@ def create_order(order: OrderCreate, db: Session = Depends(get_db)):
     return db_order
 
 @app.get("/orders/", response_model=List[OrderResponse])
-def read_orders(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+def read_orders(skip: int = 0, limit: int = 10, db: Session = Depends(get_db), token_data: dict = Depends(verify_token)):
     orders = db.query(Order).offset(skip).limit(limit).all()
     return orders
 
 @app.get("/orders/{order_id}", response_model=OrderResponse)
-def read_order(order_id: int, db: Session = Depends(get_db)):
+def read_order(order_id: int, db: Session = Depends(get_db), token_data: dict = Depends(verify_token)):
     order = db.query(Order).filter(Order.id == order_id).first()
     if order is None:
-        raise HTTPException(status_code=404, detail="Order not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
     return order
 
 @app.put("/orders/{order_id}", response_model=OrderResponse)
-def update_order(order_id: int, order: OrderCreate, db: Session = Depends(get_db)):
+def update_order(order_id: int, order: OrderCreate, db: Session = Depends(get_db), token_data: dict = Depends(verify_token)):
     db_order = db.query(Order).filter(Order.id == order_id).first()
     if db_order is None:
-        raise HTTPException(status_code=404, detail="Order not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
     for attr, value in order.dict().items():
         setattr(db_order, attr, value)
     db.commit()
@@ -134,17 +170,17 @@ def update_order(order_id: int, order: OrderCreate, db: Session = Depends(get_db
     return db_order
 
 @app.delete("/orders/{order_id}")
-def delete_order(order_id: int, db: Session = Depends(get_db)):
+def delete_order(order_id: int, db: Session = Depends(get_db), token_data: dict = Depends(verify_token)):
     db_order = db.query(Order).filter(Order.id == order_id).first()
     if db_order is None:
-        raise HTTPException(status_code=404, detail="Order not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
     db.delete(db_order)
     db.commit()
     return {"message": "Order deleted"}
 
 # CRUD operations for order details
-@app.post("/orders/{order_id}/details/", response_model=OrderDetailResponse, status_code=201)
-def create_order_detail(order_id: int, order_detail: OrderDetailCreate, db: Session = Depends(get_db)):
+@app.post("/orders/{order_id}/details/", response_model=OrderDetailResponse, status_code=status.HTTP_201_CREATED)
+def create_order_detail(order_id: int, order_detail: OrderDetailCreate, db: Session = Depends(get_db), token_data: dict = Depends(verify_token)):
     db_order_detail = OrderDetail(**order_detail.dict(), order_id=order_id)
     db.add(db_order_detail)
     db.commit()
@@ -152,10 +188,10 @@ def create_order_detail(order_id: int, order_detail: OrderDetailCreate, db: Sess
     return db_order_detail
 
 @app.get("/orders/{order_id}/details/", response_model=List[OrderDetailResponse])
-def read_order_details(order_id: int, db: Session = Depends(get_db)):
+def read_order_details(order_id: int, db: Session = Depends(get_db), token_data: dict = Depends(verify_token)):
     order_details = db.query(OrderDetail).filter(OrderDetail.order_id == order_id).all()
     return order_details
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+#if __name__ == "__main__":
+#    import uvicorn
+#    uvicorn.run(app, host="127.0.0.1", port=8000)
