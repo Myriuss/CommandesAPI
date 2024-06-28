@@ -7,6 +7,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from fastapi.security import OAuth2PasswordBearer
+from confluent_kafka import Producer
 
 # Initialize FastAPI
 app = FastAPI()
@@ -104,6 +105,22 @@ def get_db():
     finally:
         db.close()
 
+# Kafka configuration
+KAFKA_BROKER_URL = 'localhost:9092'  # Replace with your Kafka broker URL
+KAFKA_TOPIC = 'orders'
+
+producer = Producer({'bootstrap.servers': KAFKA_BROKER_URL})
+
+def delivery_report(err, msg):
+    if err is not None:
+        print('Message delivery failed: {}'.format(err))
+    else:
+        print('Message delivered to {} [{}]'.format(msg.topic(), msg.partition()))
+
+def send_kafka_message(message):
+    producer.produce(KAFKA_TOPIC, value=message, callback=delivery_report)
+    producer.poll(1)
+
 # Token Settings
 SECRET_KEY = "your-secret-key"  # Replace with a secure random key in production
 ALGORITHM = "HS256"
@@ -144,6 +161,7 @@ def create_order(order: OrderCreate, db: Session = Depends(get_db), token_data: 
     db.add(db_order)
     db.commit()
     db.refresh(db_order)
+    send_kafka_message(f"Order created: {db_order.id}")
     return db_order
 
 @app.get("/orders/", response_model=List[OrderResponse])
@@ -167,6 +185,7 @@ def update_order(order_id: int, order: OrderCreate, db: Session = Depends(get_db
         setattr(db_order, attr, value)
     db.commit()
     db.refresh(db_order)
+    send_kafka_message(f"Order updated: {db_order.id}")
     return db_order
 
 @app.delete("/orders/{order_id}")
@@ -176,6 +195,7 @@ def delete_order(order_id: int, db: Session = Depends(get_db), token_data: dict 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
     db.delete(db_order)
     db.commit()
+    send_kafka_message(f"Order deleted: {order_id}")
     return {"message": "Order deleted"}
 
 # CRUD operations for order details
@@ -185,6 +205,7 @@ def create_order_detail(order_id: int, order_detail: OrderDetailCreate, db: Sess
     db.add(db_order_detail)
     db.commit()
     db.refresh(db_order_detail)
+    send_kafka_message(f"Order detail created: {db_order_detail.id}")
     return db_order_detail
 
 @app.get("/orders/{order_id}/details/", response_model=List[OrderDetailResponse])
